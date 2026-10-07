@@ -1,6 +1,6 @@
 # LLM File Assistant
 
-An LLM (Claude, via the Anthropic API) that answers questions about resume
+An LLM (any tool-capable model via the [OpenRouter](https://openrouter.ai) Python SDK) that answers questions about resume
 files by calling four file-system tools.
 
 ```
@@ -20,7 +20,7 @@ cd $HOME\Documents\llm-file-assistant
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env      # then put your ANTHROPIC_API_KEY in .env
+copy .env.example .env      # then put your OPENROUTER_API_KEY in .env
 ```
 
 (macOS/Linux: `source .venv/bin/activate`, `cp .env.example .env`.)
@@ -37,6 +37,10 @@ python llm_file_assistant.py          # interactive mode (keeps conversation his
 `-v` prints each tool call the model makes. Summaries are written to
 `summaries/`. Options: `--model`, `--base-dir`, `--max-iterations`.
 
+Pick any OpenRouter model that supports tool calling, e.g.
+`--model anthropic/claude-sonnet-4.5` or `--model google/gemini-2.5-flash`
+(or set `OPENROUTER_MODEL` in `.env`). Default: `openai/gpt-4o-mini`.
+
 ## Part A — `fs_tools.py`
 
 | Tool | Returns | Notes |
@@ -51,18 +55,19 @@ escape to the LLM loop.
 
 ## Part B — `llm_file_assistant.py`
 
-1. `TOOL_SCHEMAS` describe the tools to Claude.
-2. `LLMFileAssistant.ask()` sends the query; when Claude replies with
-   `tool_use` blocks, each is executed by `dispatch_tool()` and the results are
-   returned as `tool_result` blocks. This repeats until Claude gives a final
-   answer (capped by `--max-iterations`).
+1. `TOOL_SCHEMAS` describe the tools as OpenAI-style function tools (the
+   format OpenRouter uses).
+2. `LLMFileAssistant.ask()` calls `OpenRouter().chat.send(model, messages, tools)`.
+   When the model replies with `tool_calls`, each is executed by
+   `dispatch_tool()` and the result is appended as a `role: "tool"` message.
+   This repeats until the model gives a final answer (capped by
+   `--max-iterations`).
 3. **Sandboxing:** every path is resolved against `--base-dir` (the project
    folder by default); paths that escape it (`../..`) are refused.
 4. Long file contents are truncated before being sent to the model.
 
-To use OpenAI or another provider, only the `client.messages.create` call and
-the block conversion in `LLMFileAssistant` need changing — the tools and
-dispatcher are provider-agnostic.
+Because OpenRouter fronts many providers, switching between OpenAI,
+Anthropic, Google, Mistral, etc. is just a different `--model` id.
 
 ## Tests
 
@@ -70,4 +75,6 @@ dispatcher are provider-agnostic.
 pytest -q
 ```
 
-The assistant tests use a scripted fake client, so they run offline.
+The assistant tests run offline: most use a scripted fake client, and one
+drives the real `openrouter` SDK against a mocked HTTP server to check the
+request/response wiring.

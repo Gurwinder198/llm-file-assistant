@@ -6,40 +6,41 @@ import pytest
 import llm_file_assistant as lfa
 
 
-# ---------- fake Anthropic client ----------
+# ---------- fake OpenRouter client (same shape as openrouter.OpenRouter) ----------
 
-def text_block(text):
-    return SimpleNamespace(type="text", text=text)
-
-
-def tool_block(id_, name, input_):
-    return SimpleNamespace(type="tool_use", id=id_, name=name, input=input_)
+def tool_call(id_, name, args):
+    return SimpleNamespace(id=id_, type="function",
+                           function=SimpleNamespace(name=name, arguments=json.dumps(args)))
 
 
-def response(blocks, stop="end_turn"):
-    return SimpleNamespace(content=blocks, stop_reason=stop)
+def response(content=None, tool_calls=None):
+    finish = "tool_calls" if tool_calls else "stop"
+    msg = SimpleNamespace(role="assistant", content=content, tool_calls=tool_calls)
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=finish, index=0)])
 
 
 class FakeClient:
-    """Replays scripted responses and records every request."""
+    """Replays scripted responses and records every request's messages."""
 
     def __init__(self, scripted):
         self.scripted = list(scripted)
         self.requests = []
-        self.messages = self
+        self.chat = self
 
-    def create(self, **kwargs):
-        self.requests.append(json.loads(json.dumps(kwargs["messages"], default=str)))
+    def send(self, **kwargs):
+        self.requests.append(json.loads(json.dumps(kwargs["messages"])))
+        self.last_kwargs = kwargs
         return self.scripted.pop(0)
 
 
-# ---------- dispatcher ----------
+# ---------- schemas + dispatcher ----------
 
-def test_tool_schemas_cover_all_tools():
-    names = {t["name"] for t in lfa.TOOL_SCHEMAS}
+def test_tool_schemas_are_openai_function_format():
+    names = {t["function"]["name"] for t in lfa.TOOL_SCHEMAS}
     assert names == {"read_file", "list_files", "write_file", "search_in_file"}
     for t in lfa.TOOL_SCHEMAS:
-        assert t["input_schema"]["type"] == "object"
+        assert t["type"] == "function"
+        assert t["function"]["parameters"]["type"] == "object"
 
 
 def test_dispatch_unknown_tool(resume_dir):
@@ -48,11 +49,17 @@ def test_dispatch_unknown_tool(resume_dir):
     assert "unknown tool" in out["error"].lower()
 
 
-def test_dispatch_relative_path_resolves_against_base_dir(resume_dir):
-    out = json.loads(lfa.dispatch_tool("list_files", {"directory": "resumes", "extension": "pdf"},
+def test_dispatch_accepts_json_string_args(resume_dir):
+    out = json.loads(lfa.dispatch_tool("list_files", '{"directory": "resumes", "extension": "pdf"}',
                                        base_dir=resume_dir.parent))
     assert out["success"] is True
     assert [f["name"] for f in out["files"]] == ["john_doe.pdf"]
+
+
+def test_dispatch_invalid_json_args(resume_dir):
+    out = json.loads(lfa.dispatch_tool("read_file", "{not json", base_dir=resume_dir.parent))
+    assert out["success"] is False
+    assert "invalid json" in out["error"].lower()
 
 
 def test_dispatch_blocks_path_escape(resume_dir):
@@ -80,69 +87,114 @@ def test_dispatch_truncates_long_content(tmp_path):
 
 def test_single_tool_round_trip(resume_dir):
     client = FakeClient([
-        response([text_block("Let me look."),
-                  tool_block("t1", "list_files", {"directory": "resumes"})], stop="tool_use"),
-        response([text_block("There are 3 resumes.")]),
+        response("Let me look.", [tool_call("t1", "list_files", {"directory": "resumes"})]),
+        response("There are 3 resumes."),
     ])
-    a = lfa.LLMFileAssistant(client=client, base_dir=resume_dir.parent)
+    a = lfa.LLMFileAssistant(client=client, model="test/model", base_dir=resume_dir.parent)
     answer = a.ask("How many resumes are there?")
 
     assert answer == "There are 3 resumes."
-    # second request must contain the tool_result for t1
-    last_user = client.requests[1][-1]
-    assert last_user["role"] == "user"
-    result = last_user["content"][0]
-    assert result["type"] == "tool_result" and result["tool_use_id"] == "t1"
-    assert "jane_smith.txt" in result["content"]
+    assert client.last_kwargs["model"] == "test/model"
+    assert client.last_kwargs["tools"] is lfa.TOOL_SCHEMAS
+    first = client.requests[0]
+    assert first[0]["role"] == "system" and first[1] == {"role": "user", "content": "How many resumes are there?"}
+    # second request: ..., assistant(tool_calls), tool(result)
+    second = client.requests[1]
+    assert second[-2]["role"] == "assistant"
+    assert second[-2]["tool_calls"][0]["function"]["name"] == "list_files"
+    tool_msg = second[-1]
+    assert tool_msg["role"] == "tool" and tool_msg["tool_call_id"] == "t1"
+    assert "jane_smith.txt" in tool_msg["content"]
 
 
 def test_parallel_tool_calls_and_write(resume_dir):
     client = FakeClient([
-        response([tool_block("a", "search_in_file", {"filepath": "resumes/jane_smith.txt", "keyword": "python"}),
-                  tool_block("b", "search_in_file", {"filepath": "resumes/raj_patel.docx", "keyword": "python"})],
-                 stop="tool_use"),
-        response([tool_block("c", "write_file", {"filepath": "summaries/out.md", "content": "# Python: Jane"})],
-                 stop="tool_use"),
-        response([text_block("Done.")]),
+        response(None, [tool_call("a", "search_in_file", {"filepath": "resumes/jane_smith.txt", "keyword": "python"}),
+                        tool_call("b", "search_in_file", {"filepath": "resumes/raj_patel.docx", "keyword": "python"})]),
+        response(None, [tool_call("c", "write_file", {"filepath": "summaries/out.md", "content": "# Python: Jane"})]),
+        response("Done."),
     ])
     a = lfa.LLMFileAssistant(client=client, base_dir=resume_dir.parent)
     assert a.ask("Find python resumes and save a summary") == "Done."
 
-    results = client.requests[1][-1]["content"]
-    assert [r["tool_use_id"] for r in results] == ["a", "b"]
-    assert json.loads(results[0]["content"])["match_count"] == 2
-    assert json.loads(results[1]["content"])["match_count"] == 0
+    tool_msgs = [m for m in client.requests[1] if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["a", "b"]
+    assert json.loads(tool_msgs[0]["content"])["match_count"] == 2
+    assert json.loads(tool_msgs[1]["content"])["match_count"] == 0
     assert (resume_dir.parent / "summaries" / "out.md").read_text() == "# Python: Jane"
     assert [c["name"] for c in a.tool_log] == ["search_in_file", "search_in_file", "write_file"]
 
 
 def test_max_iterations_guard(resume_dir):
-    loop = [response([tool_block(f"t{i}", "list_files", {"directory": "resumes"})], stop="tool_use")
-            for i in range(5)]
+    loop = [response(None, [tool_call(f"t{i}", "list_files", {"directory": "resumes"})]) for i in range(5)]
     a = lfa.LLMFileAssistant(client=FakeClient(loop), base_dir=resume_dir.parent, max_iterations=3)
-    answer = a.ask("loop forever")
-    assert "stopped" in answer.lower()
+    assert "stopped" in a.ask("loop forever").lower()
 
 
 def test_api_error_rolls_back_history(resume_dir):
     class Boom:
         def __init__(self):
-            self.messages = self
+            self.chat = self
 
-        def create(self, **_):
+        def send(self, **_):
             raise RuntimeError("network down")
 
     a = lfa.LLMFileAssistant(client=Boom(), base_dir=resume_dir.parent)
     with pytest.raises(RuntimeError):
         a.ask("hello")
-    assert a.messages == []
+    assert [m["role"] for m in a.messages] == ["system"]
 
 
-def test_history_persists_between_questions(resume_dir):
-    client = FakeClient([response([text_block("Hi")]), response([text_block("Again")])])
+def test_history_persists_and_reset(resume_dir):
+    client = FakeClient([response("Hi"), response("Again")])
     a = lfa.LLMFileAssistant(client=client, base_dir=resume_dir.parent)
     a.ask("one")
     a.ask("two")
-    assert len(client.requests[1]) == 3  # user, assistant, user
+    assert [m["role"] for m in client.requests[1]] == ["system", "user", "assistant", "user"]
     a.reset()
-    assert a.messages == []
+    assert [m["role"] for m in a.messages] == ["system"]
+
+
+# ---------- real OpenRouter SDK, mocked HTTP ----------
+
+def test_real_openrouter_sdk_wiring(resume_dir):
+    """Drive the actual `openrouter` SDK against a fake HTTP server to verify
+    request serialisation and response parsing end to end."""
+    httpx = pytest.importorskip("httpx")
+    openrouter = pytest.importorskip("openrouter")
+
+    bodies = []
+
+    def chat_result(message, finish):
+        return {
+            "id": "gen-1", "object": "chat.completion", "created": 1, "model": "openai/gpt-4o-mini",
+            "system_fingerprint": None,
+            "choices": [{"index": 0, "finish_reason": finish, "message": message}],
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/chat/completions")
+        assert request.headers["authorization"] == "Bearer test-key"
+        body = json.loads(request.content)
+        bodies.append(body)
+        if len(bodies) == 1:
+            return httpx.Response(200, json=chat_result({
+                "role": "assistant", "content": None,
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "search_in_file",
+                                             "arguments": '{"filepath": "resumes/john_doe.pdf", "keyword": "pytorch"}'}}],
+            }, "tool_calls"))
+        return httpx.Response(200, json=chat_result(
+            {"role": "assistant", "content": "John Doe mentions PyTorch."}, "stop"))
+
+    client = openrouter.OpenRouter(api_key="test-key",
+                                   client=httpx.Client(transport=httpx.MockTransport(handler)))
+    a = lfa.LLMFileAssistant(client=client, model="openai/gpt-4o-mini", base_dir=resume_dir.parent)
+
+    assert a.ask("Who knows PyTorch?") == "John Doe mentions PyTorch."
+    assert bodies[0]["model"] == "openai/gpt-4o-mini"
+    assert bodies[0]["tools"][0]["function"]["name"] == "read_file"
+    sent = bodies[1]["messages"]
+    assert sent[-2]["tool_calls"][0]["id"] == "call_1"
+    assert sent[-1]["role"] == "tool" and sent[-1]["tool_call_id"] == "call_1"
+    assert json.loads(sent[-1]["content"])["match_count"] == 1
