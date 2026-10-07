@@ -1,0 +1,16 @@
+Priya Sharma
+Frontend Developer | priya.sharma@example.com | Pune, India
+
+SKILLS
+JavaScript, TypeScript, React, Next.js, Tailwind CSS, Jest, Figma
+
+EXPERIENCE
+Frontend Developer, PixelWorks (2021 - present)
+- Led the React rewrite of the customer dashboard (Lighthouse score 58 -> 94).
+- Built a shared component library used by 6 product teams.
+
+Junior Web Developer, StartHub (2019 - 2021)
+- Built marketing sites with Next.js and headless CMS.
+
+EDUCATION
+B.E. Information Technology, Pune University (2019)
