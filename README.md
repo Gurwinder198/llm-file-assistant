@@ -9,30 +9,45 @@ llm-file-assistant/
 ├── llm_file_assistant.py     # Part B: tool schemas, dispatcher, agent loop, CLI
 ├── resumes/                  # fictional sample resumes (PDF, DOCX, TXT)
 ├── scripts/make_sample_resumes.py
+├── setup.bat                 # one-click Windows setup
 ├── tests/                    # pytest suite (no API key needed)
 └── docs/plans/               # design + implementation plan
 ```
 
-## Setup (Windows PowerShell)
+## Setup (Windows)
+
+**Easiest:** double-click `setup.bat` (or run `.\setup.bat`). It finds Python,
+creates `.venv`, installs the requirements and creates `.env`. Then open `.env`
+and paste your `OPENROUTER_API_KEY`.
+
+Manual equivalent — note it uses `py -m pip` / `python -m pip`, so it works even
+when `pip` is "not recognized":
 
 ```powershell
 cd $HOME\Documents\llm-file-assistant
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env      # then put your OPENROUTER_API_KEY in .env
+py -3 -m venv .venv                       # or: python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+copy .env.example .env                    # then put your OPENROUTER_API_KEY in .env
 ```
 
-(macOS/Linux: `source .venv/bin/activate`, `cp .env.example .env`.)
+If neither `py` nor `python` is recognized, Python isn't installed (or not on
+PATH): install it from python.org with **"Add python.exe to PATH"** ticked, or
+run `winget install Python.Python.3.12`, then open a **new** terminal.
 
 ## Run
 
+Using the venv's Python directly means you don't need to activate anything:
+
 ```powershell
-python llm_file_assistant.py -v "Read all resumes in the resumes folder"
-python llm_file_assistant.py -v "Find resumes mentioning Python experience"
-python llm_file_assistant.py -v "Create a summary file for resume_john_doe.pdf"
-python llm_file_assistant.py          # interactive mode (keeps conversation history)
+.\.venv\Scripts\python.exe llm_file_assistant.py -v "Read all resumes in the resumes folder"
+.\.venv\Scripts\python.exe llm_file_assistant.py -v "Find resumes mentioning Python experience"
+.\.venv\Scripts\python.exe llm_file_assistant.py -v "Create a summary file for resume_john_doe.pdf"
+.\.venv\Scripts\python.exe llm_file_assistant.py      # interactive mode (keeps history)
 ```
+
+(Or activate first with `.\.venv\Scripts\Activate.ps1` and just use `python`.
+If PowerShell blocks that script, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.)
 
 `-v` prints each tool call the model makes. Summaries are written to
 `summaries/`. Options: `--model`, `--base-dir`, `--max-iterations`.
@@ -72,7 +87,7 @@ Anthropic, Google, Mistral, etc. is just a different `--model` id.
 ## Tests
 
 ```powershell
-pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 The assistant tests run offline: most use a scripted fake client, and one
