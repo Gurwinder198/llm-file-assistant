@@ -162,6 +162,67 @@ def dispatch_tool(name: str, args: dict | str | None, base_dir: Optional[Path | 
     return json.dumps(result, ensure_ascii=False)
 
 
+
+# --------------------------------------------------------------------------- #
+# Verbose trace (makes tool calling visible, e.g. for demos)
+# --------------------------------------------------------------------------- #
+
+def _supports_color(stream) -> bool:
+    if os.getenv("NO_COLOR") or not hasattr(stream, "isatty") or not stream.isatty():
+        return False
+    if os.name == "nt":
+        os.system("")  # enables ANSI escape codes in the Windows console
+    return True
+
+
+class _Style:
+    def __init__(self, enabled: bool):
+        self.enabled = enabled
+
+    def __call__(self, text: str, code: str) -> str:
+        return f"\033[{code}m{text}\033[0m" if self.enabled else text
+
+
+def format_args(args: Any, max_value: int = 60) -> str:
+    """Compact one-line rendering of tool arguments (long strings shortened)."""
+    if not isinstance(args, dict):
+        return str(args)[:max_value]
+    parts = []
+    for key, value in args.items():
+        if isinstance(value, str):
+            flat = value.replace("\n", " ")
+            shown = flat if len(flat) <= max_value else f"{flat[:max_value]}… ({len(value)} chars)"
+            parts.append(f'{key}="{shown}"')
+        else:
+            parts.append(f"{key}={value!r}")
+    return ", ".join(parts)
+
+
+def summarize_result(name: str, output: str) -> str:
+    """One-line human summary of a tool's JSON result."""
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        return "non-JSON result"
+    if not data.get("success", False):
+        return f"ERROR: {data.get('error', 'unknown error')}"
+    if name == "list_files":
+        names = ", ".join(f["name"] for f in data["files"][:6])
+        more = "…" if data["count"] > 6 else ""
+        return f"{data['count']} file(s): {names}{more}"
+    if name == "read_file":
+        meta = data["metadata"]
+        extra = f", {meta['pages']} page(s)" if "pages" in meta else ""
+        return f"read {meta['name']} — {meta['word_count']} words{extra}"
+    if name == "search_in_file":
+        if data["match_count"] == 0:
+            return f"0 matches for '{data['keyword']}' in {data['file_name']}"
+        line = data["matches"][0]["line"]
+        return f"{data['match_count']} match(es) for '{data['keyword']}' in {data['file_name']} (first on line {line})"
+    if name == "write_file":
+        return f"wrote {data['bytes_written']} bytes → {data['path']}"
+    return "ok"
+
 # --------------------------------------------------------------------------- #
 # Assistant
 # --------------------------------------------------------------------------- #
@@ -192,6 +253,7 @@ class LLMFileAssistant:
         self.base_dir = Path(base_dir).resolve() if base_dir is not None else None
         self.max_iterations = max_iterations
         self.verbose = verbose
+        self._style = _Style(verbose and _supports_color(sys.stderr))
         self.messages: list[dict] = []
         self.tool_log: list[dict] = []
         self.reset()
@@ -216,7 +278,9 @@ class LLMFileAssistant:
             raise
 
     def _run_loop(self) -> str:
-        for _ in range(self.max_iterations):
+        st = self._style
+        for step in range(1, self.max_iterations + 1):
+            self._log(st(f"\n[step {step}] asking {self.model} …", "2"))
             response = self.client.chat.send(
                 model=self.model,
                 messages=self.messages,
@@ -240,16 +304,20 @@ class LLMFileAssistant:
             self.messages.append(assistant_msg)
 
             if not tool_calls:
+                self._log(st("[done] model returned its final answer\n", "2"))
                 return (text or "").strip()
 
+            self._log(st(f"model requested {len(tool_calls)} tool call(s):", "1;36"))
             for tc in tool_calls:
                 name, raw_args = tc.function.name, tc.function.arguments or "{}"
-                self._log(f"→ {name}({raw_args[:200]})")
-                output = dispatch_tool(name, raw_args, self.base_dir)
                 try:
                     parsed_args = json.loads(raw_args)
                 except json.JSONDecodeError:
                     parsed_args = raw_args
+                self._log("  " + st(f"→ {name}", "1;33") + f"({format_args(parsed_args)})")
+                output = dispatch_tool(name, raw_args, self.base_dir)
+                ok = json.loads(output).get("success", False)
+                self._log("    " + st(f"← {summarize_result(name, output)}", "32" if ok else "31"))
                 self.tool_log.append({"name": name, "input": parsed_args})
                 self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": output})
 

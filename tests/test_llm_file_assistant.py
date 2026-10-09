@@ -198,3 +198,40 @@ def test_real_openrouter_sdk_wiring(resume_dir):
     assert sent[-2]["tool_calls"][0]["id"] == "call_1"
     assert sent[-1]["role"] == "tool" and sent[-1]["tool_call_id"] == "call_1"
     assert json.loads(sent[-1]["content"])["match_count"] == 1
+
+
+# ---------- verbose trace helpers ----------
+
+def test_format_args_shortens_long_strings():
+    out = lfa.format_args({"filepath": "summaries/x.md", "content": "a\n" * 100})
+    assert 'filepath="summaries/x.md"' in out
+    assert "(200 chars)" in out and "\n" not in out
+
+
+def test_summarize_result_per_tool(resume_dir):
+    base = resume_dir.parent
+    s = lfa.summarize_result("list_files", lfa.dispatch_tool("list_files", {"directory": "resumes"}, base))
+    assert s.startswith("3 file(s):")
+    s = lfa.summarize_result("read_file", lfa.dispatch_tool("read_file", {"filepath": "resumes/john_doe.pdf"}, base))
+    assert "john_doe.pdf" in s and "1 page(s)" in s
+    s = lfa.summarize_result("search_in_file",
+                             lfa.dispatch_tool("search_in_file", {"filepath": "resumes/jane_smith.txt", "keyword": "python"}, base))
+    assert s.startswith("2 match(es)") and "line 3" in s
+    s = lfa.summarize_result("write_file", lfa.dispatch_tool("write_file", {"filepath": "o/x.md", "content": "hi"}, base))
+    assert s.startswith("wrote 2 bytes")
+    s = lfa.summarize_result("read_file", lfa.dispatch_tool("read_file", {"filepath": "nope.pdf"}, base))
+    assert s.startswith("ERROR:")
+
+
+def test_verbose_trace_output(resume_dir, capsys):
+    client = FakeClient([
+        response(None, [tool_call("t1", "search_in_file", {"filepath": "resumes/jane_smith.txt", "keyword": "python"})]),
+        response("Jane matches."),
+    ])
+    a = lfa.LLMFileAssistant(client=client, model="m", base_dir=resume_dir.parent, verbose=True)
+    a.ask("who knows python?")
+    err = capsys.readouterr().err
+    assert "[step 1]" in err and "model requested 1 tool call(s)" in err
+    assert "→ search_in_file(" in err and "← 2 match(es)" in err
+    assert "[done]" in err
+    assert "\033[" not in err  # no colors when not a TTY

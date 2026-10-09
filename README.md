@@ -10,6 +10,7 @@ llm-file-assistant/
 ├── resumes/                  # fictional sample resumes (PDF, DOCX, TXT)
 ├── scripts/make_sample_resumes.py
 ├── setup.bat                 # one-click Windows setup
+├── demo.py / demo.bat        # guided tool-calling demo for screen recording
 ├── tests/                    # pytest suite (no API key needed)
 └── docs/plans/               # design + implementation plan
 ```
@@ -49,12 +50,22 @@ Using the venv's Python directly means you don't need to activate anything:
 If PowerShell blocks that script, run
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.)
 
-`-v` prints each tool call the model makes. Summaries are written to
+`-v` prints a step-by-step trace: each tool call the model makes and a
+one-line summary of its result. Summaries are written to
 `summaries/`. Options: `--model`, `--base-dir`, `--max-iterations`.
 
 Pick any OpenRouter model that supports tool calling, e.g.
 `--model anthropic/claude-sonnet-4.5` or `--model google/gemini-2.5-flash`
 (or set `OPENROUTER_MODEL` in `.env`). Default: `openai/gpt-4o-mini`.
+
+## Demo
+
+`.\demo.bat` (or `.\.venv\Scripts\python.exe demo.py`) runs four scenes one
+at a time, pressing Enter between them: read all resumes, Python search, write
+a summary file, and error handling. Each step shows which tools the model
+called (`→`) and what they returned (`←`). See
+[`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) for a timed 2–3 minute
+recording script.
 
 ## Part A — `fs_tools.py`
 
