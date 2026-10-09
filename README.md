@@ -11,8 +11,7 @@ llm-file-assistant/
 ├── scripts/make_sample_resumes.py
 ├── setup.bat                 # one-click Windows setup
 ├── demo.py / demo.bat        # guided tool-calling demo for screen recording
-├── tests/                    # pytest suite (no API key needed)
-└── docs/plans/               # design + implementation plan
+└── tests/                    # pytest suite (no API key needed)
 ```
 
 ## Setup (Windows)
@@ -63,9 +62,7 @@ Pick any OpenRouter model that supports tool calling, e.g.
 `.\demo.bat` (or `.\.venv\Scripts\python.exe demo.py`) runs four scenes one
 at a time, pressing Enter between them: read all resumes, Python search, write
 a summary file, and error handling. Each step shows which tools the model
-called (`→`) and what they returned (`←`). See
-[`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) for a timed 2–3 minute
-recording script.
+called (`→`) and what they returned (`←`).
 
 ## Part A — `fs_tools.py`
 
